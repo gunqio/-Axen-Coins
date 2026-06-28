@@ -10,7 +10,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/Axen-Coins-Private
+          repository: gunqio/zhiyong          # 修改此处
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
