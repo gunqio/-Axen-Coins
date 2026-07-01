@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   # 增加支持外部 API 触发通道
   repository_dispatch:
-    types: [trigger-next-run]
+    types: [axen_auto_task]
 
 jobs:
   run_axen_us:
