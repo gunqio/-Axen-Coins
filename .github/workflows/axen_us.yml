@@ -46,7 +46,7 @@ jobs:
           sleep 5
 
           echo "🌐 测试代理连通性..."
-          if curl -s --max-time 12 -x socks5h://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
+          if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
             echo "✅ 代理网路已打通！出口 IP 掩码处理为："
             cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
           else
