@@ -9,7 +9,7 @@ jobs:
   run_axen_us:
     runs-on: ubuntu-latest
     env:
-      PROXY_CONFIG_BASE64: ${{ secrets.PROXY_CONFIG_BASE64 }}   # 用于条件判断
+      PROXY_CONFIG_BASE64: ${{ secrets.PROXY_CONFIG_BASE64 }}
     steps:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ===== Xray 代理启动（不导出环境变量）=====
+      # ===== Xray 代理启动（带健康检查）=====
       - name: 🔄 配置 Xray 代理（vless/vmess/ss）
         if: env.PROXY_CONFIG_BASE64 != ''
         run: |
@@ -38,15 +38,37 @@ jobs:
           echo "$PROXY_CONFIG_BASE64" | base64 -d > config.json
           echo "✅ 配置文件已生成"
 
+          # 启动 Xray（后台运行）
           nohup ./xray -c config.json > xray.log 2>&1 &
-          sleep 3
+          sleep 4
 
-          # 测试连通性（仅本步骤内有效）
+          # 检查进程是否存在
+          if ! pgrep -x "xray" > /dev/null; then
+            echo "❌ Xray 进程未启动，查看日志："
+            cat xray.log
+            exit 1
+          fi
+
+          # 检查 HTTP 端口（10809）和 SOCKS5 端口（1080）是否监听
+          # 若您的 config.json 中端口不同，请修改下方端口号
+          if ! ss -tlnp | grep -q ":10809" || ! ss -tlnp | grep -q ":1080"; then
+            echo "❌ 端口未监听，请确认 config.json 的 inbound 端口为 10809（HTTP）和 1080（SOCKS5）"
+            echo "当前监听端口："
+            ss -tlnp | grep xray
+            echo "---- Xray 日志 ----"
+            cat xray.log
+            exit 1
+          fi
+
+          # 测试代理连通性
+          echo "🔍 测试代理连通性..."
           curl -s -x http://127.0.0.1:10809 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g'
-          echo "✅ Xray 代理已就绪"
-        # 注意：此处不写入 $GITHUB_ENV，避免影响其他步骤
+          echo "✅ Xray 代理已就绪，HTTP端口:10809，SOCKS端口:1080"
 
-      # ===== 系统依赖（直连）=====
+          # 将代理就绪状态写入文件，供后续步骤判断
+          echo "proxy_ready=true" > proxy_status.env
+
+      # ===== 安装系统依赖（直连）=====
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
@@ -57,13 +79,13 @@ jobs:
             xdotool \
             scrot
 
-      # ===== Python 依赖（直连，不再走代理）=====
+      # ===== 安装 Python 依赖（直连）=====
       - name: 🐍 安装 Python 依赖
         run: |
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      # ===== 运行脚本（在此处启用代理）=====
+      # ===== 运行脚本（仅在代理就绪时启用）=====
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
@@ -71,13 +93,16 @@ jobs:
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
-          # 如果配置了代理，则在当前 shell 中启用
-          if [ -n "$PROXY_CONFIG_BASE64" ]; then
+          # 检查代理是否就绪（通过文件标记）
+          if [ -f proxy_status.env ] && grep -q "proxy_ready=true" proxy_status.env; then
             export HTTP_PROXY=http://127.0.0.1:10809
             export HTTPS_PROXY=http://127.0.0.1:10809
             export ALL_PROXY=socks5://127.0.0.1:1080
-            echo "🔗 代理已启用"
+            echo "🔗 代理已启用（HTTP:10809, SOCKS:1080）"
+          else
+            echo "ℹ️ 未检测到代理，将直连"
           fi
+
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
       - name: 📸 上传截图
@@ -93,7 +118,11 @@ jobs:
           WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           WORKER_AUTH_TOKEN: ${{ secrets.CF_WORKER_AUTH_TOKEN }}
         run: |
-          curl -X POST "$WORKER_URL" \
-            -H "Authorization: Bearer $WORKER_AUTH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"status": "completed"}'
+          if [ -n "$WORKER_URL" ]; then
+            curl -X POST "$WORKER_URL" \
+              -H "Authorization: Bearer $WORKER_AUTH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"status": "completed"}'
+          else
+            echo "ℹ️ 未配置 WORKER_URL，跳过通知"
+          fi
