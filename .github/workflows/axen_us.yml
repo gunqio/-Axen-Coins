@@ -17,16 +17,8 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
-      - name: 📂 移动脚本到工作目录并修复旧语法
-        run: |
-          mv private/axen_coins.py axen_coins.py
-          
-          echo "🔧 正在自动修复 axen_coins.py 中的 SeleniumBase 旧语法冲突..."
-          # 核心修复：将旧版被废弃的 chrome_options= 替换为新版支持的 options=
-          sed -i 's/chrome_options=/options=/g' axen_coins.py
-          
-          echo "📝 修复后的相关代码片段预览："
-          grep -n "options=" axen_coins.py || true
+      - name: 📂 移动脚本到工作目录
+        run: mv private/axen_coins.py axen_coins.py
 
       - name: 🐍 设置 Python
         uses: actions/setup-python@v4
@@ -44,11 +36,9 @@ jobs:
           chmod +x xray
 
           echo "📝 写入内核配置文件..."
-          # 使用 printf 确保多行 JSON 字符串能原样写入，防止特殊字符被破坏
           printf "%s" "$VLESS_CONFIG" > config.json
 
           echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
-          # 重定向标准输入 </dev/null 并配合 disown，彻底防止 GitHub Actions 追踪进程导致挂起卡死
           nohup ./xray -c config.json > xray.log 2>&1 </dev/null &
           disown
           
@@ -93,7 +83,6 @@ jobs:
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
-          # Xray socks5 代理（只有 Xray 启动成功后才有效）
           AXEN_SOCKS_PROXY: "socks5h://127.0.0.1:1080"
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
@@ -107,7 +96,7 @@ jobs:
             *.png
             screens/*.png
 
-      # === 任务结束后通知 Cloudflare Worker 定时 70 分钟 ===
+      # === 任务结束后通知 Cloudflare Worker ===
       - name: 🔔 通知
         if: always()
         env:
