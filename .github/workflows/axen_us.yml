@@ -1,3 +1,8 @@
+这是为你优化后的完整 GitHub Actions Workflow 配置文件。
+
+我将卡死的 **Xray 启动逻辑（加入了 `disown` 和彻底的后台解耦）**、**JSON 安全写入** 以及 **`if` 条件判断** 全部融入了进去，确保整个工作流能顺畅、不卡顿地跑完。
+
+```yaml
 name: Axen-US
 
 on:
@@ -28,18 +33,24 @@ jobs:
       - name: 🛡️ 启动 Xray 代理（自适应 VLESS/VMess）
         env:
           VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
-        if: env.VLESS_CONFIG != ''
+        # 优化 1：使用标准的 secrets 上下文进行非空判断
+        if: ${{ secrets.VLESS_CONFIG != '' }}
         run: |
           echo "📦 下载 Xray-core..."
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q Xray-linux-64.zip
+          unzip -q -o Xray-linux-64.zip
           chmod +x xray
 
           echo "📝 写入内核配置文件..."
-          echo "$VLESS_CONFIG" > config.json
+          # 优化 2：使用 printf 确保多行 JSON 字符串能原样写入，防止特殊字符或换行符被 echo 破坏
+          printf "%s" "$VLESS_CONFIG" > config.json
 
           echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
-          nohup ./xray -c config.json > xray.log 2>&1 &
+          # 优化 3：重定向标准输入 </dev/null 并配合 disown，防止 GitHub Actions 追踪进程导致挂起卡死
+          nohup ./xray -c config.json > xray.log 2>&1 </dev/null &
+          disown
+          
+          echo "⏳ 等待内核初始化..."
           sleep 5
 
           echo "🌐 测试代理连通性..."
@@ -113,3 +124,5 @@ jobs:
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "⚠️ Cloudflare Worker 通知失败，但 workflow 继续。"
           fi
+
+```
