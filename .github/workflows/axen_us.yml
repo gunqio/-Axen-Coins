@@ -17,8 +17,16 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
-      - name: 📂 移动脚本到工作目录
-        run: mv private/axen_coins.py axen_coins.py
+      - name: 📂 移动脚本到工作目录并修复旧语法
+        run: |
+          mv private/axen_coins.py axen_coins.py
+          
+          echo "🔧 正在自动修复 axen_coins.py 中的 SeleniumBase 旧语法冲突..."
+          # 核心修复：将旧版被废弃的 chrome_options= 替换为新版支持的 options=
+          sed -i 's/chrome_options=/options=/g' axen_coins.py
+          
+          echo "📝 修复后的相关代码片段预览："
+          grep -n "options=" axen_coins.py || true
 
       - name: 🐍 设置 Python
         uses: actions/setup-python@v4
@@ -28,7 +36,6 @@ jobs:
       - name: 🛡️ 启动 Xray 代理（自适应 VLESS/VMess）
         env:
           VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
-        # 修复关键点：在 if 中使用 env.VLESS_CONFIG，不要直接用 secrets
         if: ${{ env.VLESS_CONFIG != '' }}
         run: |
           echo "📦 下载 Xray-core..."
@@ -37,7 +44,7 @@ jobs:
           chmod +x xray
 
           echo "📝 写入内核配置文件..."
-          # 使用 printf 确保多行 JSON 字符串能原样写入，防止特殊字符或换行符被 echo 破坏
+          # 使用 printf 确保多行 JSON 字符串能原样写入，防止特殊字符被破坏
           printf "%s" "$VLESS_CONFIG" > config.json
 
           echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
