@@ -13,7 +13,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong          # 修改此处
+          repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
@@ -43,7 +43,7 @@ jobs:
           sleep 5
 
           echo "🌐 测试代理连通性..."
-          if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
+          if curl -s --max-time 12 -x socks5h://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
             echo "✅ 代理网路已打通！出口 IP 掩码处理为："
             cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
           else
@@ -52,15 +52,22 @@ jobs:
             cat xray.log
             exit 1
           fi
+
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             google-chrome-stable \
             xvfb \
             x11-utils \
             xdotool \
             scrot
+
+      - name: 🐍 缓存 Python 依赖
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: 🐍 安装 Python 依赖
         run: |
@@ -71,9 +78,10 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          GOST_PROXY: ${{ secrets.US_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
+          # Xray socks5 代理（只有 Xray 启动成功后才有效）
+          AXEN_SOCKS_PROXY: "socks5h://127.0.0.1:1080"
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
@@ -81,17 +89,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots
-          path: "*.png"
+          name: debug-screenshots-${{ github.run_number }}
+          path: |
+            *.png
+            screens/*.png
 
       # === 新增步骤：任务结束后通知 Cloudflare Worker 定时 70 分钟 ===
-      - name: 🔔 通知 
+      - name: 🔔 通知
         if: always()
         env:
           WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           WORKER_AUTH_TOKEN: ${{ secrets.CF_WORKER_AUTH_TOKEN }}
         run: |
-          curl -X POST "$WORKER_URL" \
+          RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/cf_resp.txt \
+            -X POST "$WORKER_URL" \
             -H "Authorization: Bearer $WORKER_AUTH_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"status": "completed"}'
+            -d '{"status": "completed"}')
+
+          HTTP_CODE=${RESPONSE: -3}
+          echo "CF Worker 响应 HTTP: $HTTP_CODE"
+          cat /tmp/cf_resp.txt
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "⚠️ Cloudflare Worker 通知失败，但 workflow 继续。"
+          fi
