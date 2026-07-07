@@ -5,7 +5,7 @@ on:
   repository_dispatch:
     types: [axen_auto_task]
   schedule:
-    - cron: '0 */6 * * *'    # 每6小时运行一次，按需调整
+    - cron: '0 */6 * * *'
 
 jobs:
   run_axen_us:
@@ -14,8 +14,8 @@ jobs:
 
     env:
       AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-      XRAY_SUBSCRIPTION: ${{ secrets.XRAY_SUBSCRIPTION }}   # 订阅链接
-      XRAY_NODE_JSON: ${{ secrets.XRAY_NODE_JSON }}         # 单节点 JSON（备用）
+      XRAY_SUBSCRIPTION: ${{ secrets.XRAY_SUBSCRIPTION }}
+      XRAY_NODE_JSON: ${{ secrets.XRAY_NODE_JSON }}
       TG_BOT: ${{ secrets.TG_BOT }}
       CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
       CF_WORKER_AUTH_TOKEN: ${{ secrets.CF_WORKER_AUTH_TOKEN }}
@@ -42,15 +42,19 @@ jobs:
       - name: 🛡️ 启动 Xray 代理转发
         if: ${{ env.XRAY_SUBSCRIPTION != '' || env.XRAY_NODE_JSON != '' }}
         run: |
-          echo "📦 安装 Xray-core..."
-          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-          
-          # 创建配置目录
-          mkdir -p /usr/local/etc/xray
+          echo "📦 下载 Xray-core..."
+          # 直接下载 release，不用安装脚本
+          VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          echo "Xray 版本: $VERSION"
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${VERSION}/Xray-linux-64.zip" -O xray.zip
+          unzip -q xray.zip -d xray
+          chmod +x xray/xray
+          sudo mkdir -p /usr/local/etc/xray
+          sudo mv xray/xray /usr/local/bin/xray
           
           if [ -n "$XRAY_SUBSCRIPTION" ]; then
             echo "🔗 使用订阅链接解析节点..."
-            pip install requests base64 pyqrcode 2>/dev/null || true
+            pip install requests 2>/dev/null || true
             
             python3 << 'PYEOF'
           import os, base64, json, urllib.request, urllib.parse
@@ -59,36 +63,28 @@ jobs:
           if not sub_url:
               exit(1)
 
-          # 获取订阅内容
           req = urllib.request.Request(sub_url, headers={'User-Agent': 'v2rayN/6.0'})
           with urllib.request.urlopen(req, timeout=15) as resp:
               data = resp.read()
 
-          # 尝试 base64 解码
           try:
               decoded = base64.b64decode(data + b'=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
               links = [l.strip() for l in decoded.strip().split('\n') if l.strip()]
           except:
-              # 可能是 raw 链接
               links = [l.strip() for l in data.decode('utf-8', errors='ignore').strip().split('\n') if l.strip()]
 
           if not links:
               print("❌ 订阅解析失败")
               exit(1)
 
-          # 取第一个有效节点
           node_link = links[0]
-          print(f"🎯 使用节点: {node_link[:60]}...")
+          print(f"🎯 使用节点: {node_link[:80]}...")
 
-          # 解析分享链接
           config = None
           if node_link.startswith('vmess://'):
-              # VMess
               b64 = node_link[8:]
               b64 += '=' * (-len(b64) % 4)
-              node_json = base64.b64decode(b64).decode('utf-8', errors='ignore')
-              node = json.loads(node_json)
-              
+              node = json.loads(base64.b64decode(b64).decode('utf-8'))
               config = {
                   "protocol": "vmess",
                   "settings": {
@@ -117,7 +113,6 @@ jobs:
               }
               
           elif node_link.startswith('vless://'):
-              # VLESS
               from urllib.parse import urlparse, parse_qs, unquote
               parsed = urlparse(node_link)
               uuid = parsed.username
@@ -162,9 +157,7 @@ jobs:
               }
               
           elif node_link.startswith('ss://'):
-              # Shadowsocks
-              from urllib.parse import urlparse, unquote
-              # ss://base64(method:password)@server:port#remark
+              from urllib.parse import urlparse
               parsed = urlparse(node_link)
               b64_auth = parsed.username
               if b64_auth:
@@ -187,7 +180,6 @@ jobs:
               }
               
           elif node_link.startswith('trojan://'):
-              # Trojan
               from urllib.parse import urlparse, parse_qs
               parsed = urlparse(node_link)
               password = parsed.username
@@ -219,39 +211,22 @@ jobs:
               print("❌ 不支持的协议")
               exit(1)
 
-          # 生成 Xray 配置文件
           xray_config = {
               "log": {"loglevel": "warning"},
-              "inbounds": [{
-                  "port": 10808,
-                  "protocol": "socks",
-                  "settings": {"auth": "noauth", "udp": True},
-                  "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
-              }, {
-                  "port": 8080,
-                  "protocol": "http",
-                  "settings": {"allowTransparent": False}
-              }],
-              "outbounds": [{
-                  "tag": "proxy",
-                  **config
-              }, {
-                  "tag": "direct",
-                  "protocol": "freedom"
-              }, {
-                  "tag": "block",
-                  "protocol": "blackhole"
-              }],
+              "inbounds": [
+                  {"port": 10808, "protocol": "socks", "settings": {"auth": "noauth", "udp": True}, "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}},
+                  {"port": 8080, "protocol": "http", "settings": {"allowTransparent": False}}
+              ],
+              "outbounds": [
+                  {"tag": "proxy", **config},
+                  {"tag": "direct", "protocol": "freedom"},
+                  {"tag": "block", "protocol": "blackhole"}
+              ],
               "routing": {
-                  "rules": [{
-                      "type": "field",
-                      "ip": ["geoip:private"],
-                      "outboundTag": "direct"
-                  }]
+                  "rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]
               }
           }
 
-          # 清理 None 值
           def clean_none(d):
               if isinstance(d, dict):
                   return {k: clean_none(v) for k, v in d.items() if v is not None}
@@ -264,31 +239,24 @@ jobs:
           with open('/usr/local/etc/xray/config.json', 'w') as f:
               json.dump(xray_config, f, indent=2)
 
-          print("✅ Xray 配置已生成")
-          print(f"   协议: {config['protocol']}")
-          print(f"   地址: {config.get('settings', {}).get('vnext', [{}])[0].get('address', '') or config.get('settings', {}).get('servers', [{}])[0].get('address', '')}")
+          print(f"✅ 配置已生成: {config['protocol']} -> {address}")
           PYEOF
           
           else
             echo "📝 使用手动节点配置..."
-            echo "$XRAY_NODE_JSON" > /usr/local/etc/xray/config.json
+            echo "$XRAY_NODE_JSON" | sudo tee /usr/local/etc/xray/config.json > /dev/null
           fi
           
-          # 验证配置并启动
-          xray -test -config /usr/local/etc/xray/config.json
-          if [ $? -ne 0 ]; then
-            echo "❌ Xray 配置验证失败"
-            exit 1
-          fi
+          echo "🔍 验证配置..."
+          sudo xray -test -config /usr/local/etc/xray/config.json
           
-          nohup xray -config /usr/local/etc/xray/config.json > xray.log 2>&1 &
+          echo "🚀 启动 Xray..."
+          sudo nohup xray -config /usr/local/etc/xray/config.json > xray.log 2>&1 &
           sleep 3
           
           echo "✅ Xray 已启动，测试连通性..."
-          # 通过 SOCKS5 测试
-          curl -s --socks5 127.0.0.1:10808 https://api.ipify.org 2>/dev/null | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "SOCKS5 测试失败"
-          # 通过 HTTP 代理测试
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org 2>/dev/null | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "HTTP 代理测试失败"
+          curl -s --connect-timeout 10 --socks5 127.0.0.1:10808 https://api.ipify.org 2>/dev/null | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "SOCKS5 测试失败"
+          curl -s --connect-timeout 10 -x http://127.0.0.1:8080 https://api.ipify.org 2>/dev/null | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "HTTP 代理测试失败"
 
       - name: 🛠️ 安装系统依赖
         run: |
@@ -298,7 +266,8 @@ jobs:
             xvfb \
             x11-utils \
             xdotool \
-            scrot
+            scrot \
+            unzip
 
       - name: 🐍 安装 Python 依赖
         run: |
@@ -308,7 +277,6 @@ jobs:
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
-          # Xray 代理环境变量（脚本内 requests 也会走代理）
           ALL_PROXY: ${{ env.XRAY_SUBSCRIPTION != '' && 'socks5://127.0.0.1:10808' || '' }}
           HTTP_PROXY: ${{ env.XRAY_SUBSCRIPTION != '' && 'http://127.0.0.1:8080' || '' }}
           HTTPS_PROXY: ${{ env.XRAY_SUBSCRIPTION != '' && 'http://127.0.0.1:8080' || '' }}
