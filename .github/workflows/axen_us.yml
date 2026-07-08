@@ -8,7 +8,7 @@ on:
 jobs:
   run_axen_us:
     runs-on: ubuntu-latest
-    # ✅ 在作业级别定义环境变量，方便 if 条件引用
+
     env:
       GOST_PROXY: ${{ secrets.US_PROXY }}
 
@@ -36,7 +36,7 @@ jobs:
           bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
           echo "✅ 代理状态: $IS_PROXY"
           echo "✅ 代理地址: $PROXY_SERVER"
-          
+
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
@@ -58,7 +58,6 @@ jobs:
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
-          # ✅ 传递 GOST 代理地址给 Python 脚本（本地转发）
           GOST_PROXY: http://127.0.0.1:8080
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
