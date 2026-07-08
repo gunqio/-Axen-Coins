@@ -16,7 +16,7 @@ jobs:
           repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
-        
+          
       - name: 📂 移动脚本到工作目录
         run: mv private/axen_coins.py axen_coins.py
         
@@ -26,9 +26,14 @@ jobs:
           python-version: '3.10'
           
       - name: ⚙ 设置 GOST 代理转发
-        if: ${{ secrets.US_PROXY != '' }}
+        env:
+          NODE_LINK: ${{ secrets.US_PROXY }}
         run: |
-          # 1. 安装并下载 gost
+          if [ -z "$NODE_LINK" ]; then
+            echo "US_PROXY 为空，跳过代理"
+            exit 0
+          fi
+
           sudo apt-get update
           sudo apt-get install -y wget
 
@@ -38,20 +43,15 @@ jobs:
           chmod +x "gost-linux-amd64-${VERSION}"
           mv "gost-linux-amd64-${VERSION}" gost
 
-          # 2. 启动 gost 作为本地转发，上游指向 US_PROXY
-          ./gost -L=:1080 -F "${{ secrets.US_PROXY }}" > /tmp/gost.log 2>&1 &
-
-          # 等待启动
+          ./gost -L=:1080 -F "$NODE_LINK" > /tmp/gost.log 2>&1 &
           sleep 2
 
-          # 3. 设置环境变量并写入 GITHUB_ENV，让后续步骤都能看到
           echo "ALL_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
           echo "http_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
           echo "https_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
           echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
 
           echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
-          echo "✅ 上游代理: $US_PROXY"
           
       - name: 🛠️ 安装系统依赖
         run: |
