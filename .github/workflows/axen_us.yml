@@ -220,11 +220,12 @@ jobs:
               print(f"❌ 不支持的代理协议: {link[:30]}", file=sys.stderr)
               sys.exit(1)
 
+          # ========== 修复：sing-box 1.8.0 使用 listen_port 而非 port ==========
           config = {
               "log": {"level": "info"},
               "inbounds": [
-                  {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "port": 1080},
-                  {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "port": 1081}
+                  {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1080},
+                  {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": 1081}
               ],
               "outbounds": [outbound]
           }
