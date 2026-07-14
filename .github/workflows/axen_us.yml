@@ -58,7 +58,7 @@ jobs:
 
           echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
           
-      - name: 🛠️ 安装 Chrome 和系统依赖
+      - name: 🛠️ 安装 Chrome for Testing 和系统依赖
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -67,12 +67,16 @@ jobs:
             unzip \
             libnss3 \
             libfontconfig1 \
-            libgbm1 \
-            libxss1 \
-            libgtk-3-0
+            libgbm1
 
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y -qq
+          # 下载 Chrome for Testing（专为自动化测试设计，无依赖问题）
+          CHROME_VERSION="150.0.7871.115"  # 与 ChromeDriver 版本一致
+          wget -q --timeout=60 "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" -O chrome.zip || \
+          wget -q --timeout=60 "https://registry.npmmirror.com/-/binary/chrome-for-testing/${CHROME_VERSION}/linux64/chrome-linux64.zip" -O chrome.zip
+
+          unzip -q chrome.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo ln -sf /opt/chrome/chrome /usr/local/bin/google-chrome
           
           google-chrome --version
           
@@ -80,28 +84,14 @@ jobs:
         run: |
           pip install --no-cache-dir seleniumbase requests
           
-      - name: 🔧 安装 ChromeDriver（带重试）
-        timeout-minutes: 5
+      - name: 🔧 安装 ChromeDriver
         run: |
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+' | head -1)
-          echo "Chrome 主版本: $CHROME_VERSION"
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+' || echo "150.0.7871.115")
+          echo "Chrome 版本: $CHROME_VERSION"
           
-          for i in 1 2 3; do
-            echo "尝试 $i/3: seleniumbase install chromedriver"
-            if seleniumbase install chromedriver; then
-              echo "✅ ChromeDriver 安装成功"
-              chromedriver --version
-              exit 0
-            fi
-            echo "失败，等待 10 秒重试..."
-            sleep 10
-          done
-          
-          echo "使用备用方案手动下载..."
-          DRIVER_VERSION=$(curl -s --max-time 10 "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION}" || echo "150.0.7871.115")
-          
-          wget -q --timeout=60 "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O chromedriver.zip || \
-          wget -q --timeout=60 "https://registry.npmmirror.com/-/binary/chromedriver/${DRIVER_VERSION}/chromedriver_linux64.zip" -O chromedriver.zip
+          # 直接下载对应版本的 ChromeDriver
+          wget -q --timeout=60 "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O chromedriver.zip || \
+          wget -q --timeout=60 "https://registry.npmmirror.com/-/binary/chromedriver/${CHROME_VERSION}/chromedriver_linux64.zip" -O chromedriver.zip
           
           unzip -q chromedriver.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver || sudo mv chromedriver /usr/local/bin/chromedriver
@@ -112,7 +102,7 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          GOST_PROXY: http://127.0.0.1:1080
+          GOST_PROXY: ${{ env.GOST_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           which chromedriver
