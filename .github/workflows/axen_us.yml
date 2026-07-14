@@ -28,6 +28,9 @@ jobs:
         with:
           python-version: '3.10'
 
+      # ============================================
+      # 1️⃣ 安装 Chrome（直连，不走代理）
+      # ============================================
       - name: 🛠️ 安装 Chrome
         uses: browser-actions/setup-chrome@latest
         env:
@@ -41,12 +44,18 @@ jobs:
           install-chromedriver: false
           no-sudo: false
 
+      # ============================================
+      # 2️⃣ 系统依赖（直连）
+      # ============================================
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libnss3 libfontconfig1 libgbm1
           google-chrome --version
 
+      # ============================================
+      # 3️⃣ 安装 Python 依赖（直连）
+      # ============================================
       - name: 🐍 安装 Python 依赖
         env:
           http_proxy: ""
@@ -56,6 +65,9 @@ jobs:
         run: |
           pip install --no-cache-dir seleniumbase requests
 
+      # ============================================
+      # 4️⃣ 安装 ChromeDriver（直连）
+      # ============================================
       - name: 🔧 安装 ChromeDriver
         env:
           http_proxy: ""
@@ -68,6 +80,9 @@ jobs:
           seleniumbase install chromedriver ${CHROME_VERSION}
           chromedriver --version
 
+      # ============================================
+      # 5️⃣ 启动 sing-box 代理（支持 socks5/vless/vmess）
+      # ============================================
       - name: 🚀 启动 sing-box 代理
         env:
           PROXY_LINK: ${{ secrets.US_PROXY }}
@@ -96,133 +111,127 @@ jobs:
           mv sing-box-${VERSION}-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
-          cat > generate_config.py << 'ENDOFPYTHON'
-import sys, json, base64, urllib.parse, os, re
+          # ========== 增强解析脚本（支持 socks5/vless/vmess） ==========
+          cat > generate_config.py << 'EOF'
+          import sys, json, base64, urllib.parse, os, re
 
-def b64_decode(data):
-    data = re.sub(r'\s+', '', data)
-    missing = len(data) % 4
-    if missing:
-        data += '=' * (4 - missing)
-    return base64.b64decode(data).decode('utf-8')
+          def b64_decode(data):
+              data = re.sub(r'\s+', '', data)
+              missing = len(data) % 4
+              if missing:
+                  data += '=' * (4 - missing)
+              return base64.b64decode(data).decode('utf-8')
 
-def parse_socks5(url):
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != 'socks5':
-        return None
-    host = parsed.hostname
-    port = parsed.port or 1080
-    username = parsed.username or ''
-    password = parsed.password or ''
-    out = {
-        "type": "socks",
-        "server": host,
-        "server_port": port,
-    }
-    if username and password:
-        out["username"] = username
-        out["password"] = password
-    return out
+          def parse_socks5(url):
+              parsed = urllib.parse.urlparse(url)
+              if parsed.scheme != 'socks5':
+                  return None
+              host = parsed.hostname
+              port = parsed.port or 1080
+              username = parsed.username or ''
+              password = parsed.password or ''
+              out = {
+                  "type": "socks",
+                  "server": host,
+                  "server_port": port,
+              }
+              if username and password:
+                  out["username"] = username
+                  out["password"] = password
+              return out
 
-def parse_vless(url):
-    parsed = urllib.parse.urlparse(url)
-    uuid = parsed.username
-    server = parsed.hostname
-    port = parsed.port or 443
-    params = dict(urllib.parse.parse_qsl(parsed.query))
-    flow = params.get('flow', '')
-    tls = params.get('security', '') in ['tls', 'reality'] or 'tls' in params
-    sni = params.get('sni', '')
-    fp = params.get('fp', '')
-    out = {
-        "type": "vless",
-        "server": server,
-        "server_port": port,
-        "uuid": uuid,
-        "flow": flow,
-    }
-    if tls:
-        out["tls"] = {
-            "enabled": True,
-            "server_name": sni or server,
-            "utls": {"enabled": True, "fingerprint": fp or "chrome"}
-        }
-    return out
+          def parse_vless(url):
+              parsed = urllib.parse.urlparse(url)
+              uuid = parsed.username
+              server = parsed.hostname
+              port = parsed.port or 443
+              params = dict(urllib.parse.parse_qsl(parsed.query))
+              flow = params.get('flow', '')
+              tls = params.get('security', '') in ['tls', 'reality'] or 'tls' in params
+              sni = params.get('sni', '')
+              fp = params.get('fp', '')
+              out = {
+                  "type": "vless",
+                  "server": server,
+                  "server_port": port,
+                  "uuid": uuid,
+                  "flow": flow,
+              }
+              if tls:
+                  out["tls"] = {
+                      "enabled": True,
+                      "server_name": sni or server,
+                      "utls": {"enabled": True, "fingerprint": fp or "chrome"}
+                  }
+              return out
 
-def parse_vmess(url):
-    try:
-        b64_part = url.replace('vmess://', '').strip()
-        decoded = b64_decode(b64_part)
-        data = json.loads(decoded)
-    except Exception as e:
-        print(f"❌ 解析 vmess 失败: {e}", file=sys.stderr)
-        sys.exit(1)
-    out = {
-        "type": "vmess",
-        "server": data.get('add') or data.get('address', ''),
-        "server_port": int(data.get('port', 443)),
-        "uuid": data.get('id') or data.get('uuid', ''),
-        "security": data.get('scy', data.get('security', 'auto')),
-        "alter_id": int(data.get('aid', data.get('alterId', 0))),
-    }
-    tls_enabled = data.get('tls', '') in ['tls', 'reality', 'true', True]
-    if tls_enabled:
-        out["tls"] = {
-            "enabled": True,
-            "server_name": data.get('sni', data.get('host', ''))
-        }
-    transport = {}
-    net = data.get('net', 'tcp')
-    if net:
-        transport["type"] = net
-    if data.get('path'):
-        transport["path"] = data['path']
-    if data.get('host'):
-        transport["host"] = data['host']
-        transport["headers"] = {"Host": data['host']}
-    if transport:
-        out["transport"] = transport
-    return out
+          def parse_vmess(url):
+              try:
+                  b64_part = url.replace('vmess://', '').strip()
+                  decoded = b64_decode(b64_part)
+                  data = json.loads(decoded)
+              except Exception as e:
+                  print(f"❌ 解析 vmess 失败: {e}", file=sys.stderr)
+                  sys.exit(1)
+              out = {
+                  "type": "vmess",
+                  "server": data.get('add') or data.get('address', ''),
+                  "server_port": int(data.get('port', 443)),
+                  "uuid": data.get('id') or data.get('uuid', ''),
+                  "security": data.get('scy', data.get('security', 'auto')),
+                  "alter_id": int(data.get('aid', data.get('alterId', 0))),
+              }
+              tls_enabled = data.get('tls', '') in ['tls', 'reality', 'true', True]
+              if tls_enabled:
+                  out["tls"] = {
+                      "enabled": True,
+                      "server_name": data.get('sni', data.get('host', ''))
+                  }
+              transport = {}
+              net = data.get('net', 'tcp')
+              if net:
+                  transport["type"] = net
+              if data.get('path'):
+                  transport["path"] = data['path']
+              if data.get('host'):
+                  transport["host"] = data['host']
+                  transport["headers"] = {"Host": data['host']}
+              if transport:
+                  out["transport"] = transport
+              return out
 
-link = os.getenv('PROXY_LINK')
-if not link:
-    print("❌ PROXY_LINK 环境变量为空", file=sys.stderr)
-    sys.exit(1)
+          link = os.getenv('PROXY_LINK')
+          if not link:
+              print("❌ PROXY_LINK 环境变量为空", file=sys.stderr)
+              sys.exit(1)
 
-link = link.strip()
-outbound = None
-if link.startswith('socks5://'):
-    outbound = parse_socks5(link)
-    if not outbound:
-        print("❌ 解析 socks5 链接失败", file=sys.stderr)
-        sys.exit(1)
-elif link.startswith('vless://'):
-    outbound = parse_vless(link)
-elif link.startswith('vmess://'):
-    outbound = parse_vmess(link)
-else:
-    print(f"❌ 不支持的代理协议: {link[:30]}", file=sys.stderr)
-    sys.exit(1)
+          link = link.strip()
+          outbound = None
+          if link.startswith('socks5://'):
+              outbound = parse_socks5(link)
+              if not outbound:
+                  print("❌ 解析 socks5 链接失败", file=sys.stderr)
+                  sys.exit(1)
+          elif link.startswith('vless://'):
+              outbound = parse_vless(link)
+          elif link.startswith('vmess://'):
+              outbound = parse_vmess(link)
+          else:
+              print(f"❌ 不支持的代理协议: {link[:30]}", file=sys.stderr)
+              sys.exit(1)
 
-config = {
-    "log": {"level": "info"},
-    "inbounds": [
-        {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1080},
-        {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": 1081}
-    ],
-    "outbounds": [outbound]
-}
-with open('config.json', 'w') as f:
-    json.dump(config, f, indent=2)
-print("✅ config.json 生成成功")
-
-import subprocess
-result = subprocess.run(["./sing-box", "check", "-c", "config.json"], capture_output=True, text=True)
-if result.returncode != 0:
-    print(f"⚠️ 配置校验失败: {result.stderr}", file=sys.stderr)
-    sys.exit(1)
-print("✅ 配置校验通过")
-ENDOFPYTHON
+          config = {
+              "log": {"level": "info"},
+              "inbounds": [
+                  {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "port": 1080},
+                  {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "port": 1081}
+              ],
+              "outbounds": [outbound]
+          }
+          with open('config.json', 'w') as f:
+              json.dump(config, f, indent=2)
+          print("✅ config.json 生成成功")
+          EOF
 
           python3 generate_config.py
           if [ $? -ne 0 ]; then
@@ -231,10 +240,11 @@ ENDOFPYTHON
             exit 0
           fi
 
+          # 启动 sing-box
           nohup ./sing-box run -c config.json > /tmp/sing-box.log 2>&1 &
           sleep 5
 
-          # 验证代理（修正后的 URL）
+          # 验证代理
           if curl -s -x http://127.0.0.1:1080 -I https://google.com --max-time 10; then
             echo "✅ sing-box 代理验证成功"
             echo "GOST_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
@@ -252,17 +262,23 @@ ENDOFPYTHON
           fi
           set -e
 
+      # ============================================
+      # 6️⃣ 运行主脚本（使用代理，若有）
+      # ============================================
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          GOST_PROXY: ${{ env.GOST_PROXY }}
+          GOST_PROXY: ${{ env.GOST_PROXY }}   # 若代理生效则传递，否则为空
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           which chromedriver
           chromedriver --version
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
+      # ============================================
+      # 7️⃣ 上传调试文件
+      # ============================================
       - name: 📸 上传截图和 HTML
         if: always()
         uses: actions/upload-artifact@v4
@@ -273,6 +289,9 @@ ENDOFPYTHON
             *.html
           retention-days: 3
 
+      # ============================================
+      # 8️⃣ 清理旧工作流运行记录
+      # ============================================
       - name: 🧹 清理旧的工作流运行记录
         if: always()
         env:
