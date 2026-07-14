@@ -31,6 +31,7 @@ jobs:
         run: |
           if [ -z "$NODE_LINK" ]; then
             echo "US_PROXY 为空，跳过代理"
+            echo "SKIP_PROXY=true" >> $GITHUB_ENV
             exit 0
           fi
 
@@ -46,9 +47,13 @@ jobs:
           ./gost -L=:1080 -F "$NODE_LINK" > /tmp/gost.log 2>&1 &
           sleep 2
 
+          # 大小写都写，确保各类工具都能识别
           echo "ALL_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
+          echo "HTTP_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
+          echo "HTTPS_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
           echo "http_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
           echo "https_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
+          echo "NO_PROXY=localhost,127.0.0.1" >> $GITHUB_ENV
           echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
 
           echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
@@ -65,14 +70,16 @@ jobs:
             
       - name: 🐍 安装 Python 依赖
         run: |
-          pip install seleniumbase
+          pip install --upgrade pip
+          # 增加重试和超时，防止网络波动中断
+          pip install --retries 5 --timeout 120 seleniumbase || pip install --retries 5 --timeout 120 seleniumbase
           seleniumbase install chromedriver
           
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          GOST_PROXY: http://127.0.0.1:1080   # ← 修复：与脚本中的 os.getenv('GOST_PROXY') 对应
+          GOST_PROXY: http://127.0.0.1:1080   # ← 修复：与脚本 os.getenv('GOST_PROXY') 对应
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
