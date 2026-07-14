@@ -28,9 +28,9 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ========== 代理步骤已移除，所有请求直连 ==========
-
-      # ========== 安装 Chrome（直连） ==========
+      # ============================================
+      # 1️⃣ 安装 Chrome（直连，不走代理）
+      # ============================================
       - name: 🛠️ 安装 Chrome
         uses: browser-actions/setup-chrome@latest
         env:
@@ -44,14 +44,18 @@ jobs:
           install-chromedriver: false
           no-sudo: false
 
-      # ========== 系统依赖 ==========
+      # ============================================
+      # 2️⃣ 系统依赖（直连）
+      # ============================================
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libnss3 libfontconfig1 libgbm1
           google-chrome --version
 
-      # ========== 安装 Python 依赖（直连） ==========
+      # ============================================
+      # 3️⃣ 安装 Python 依赖（直连）
+      # ============================================
       - name: 🐍 安装 Python 依赖
         env:
           http_proxy: ""
@@ -61,7 +65,9 @@ jobs:
         run: |
           pip install --no-cache-dir seleniumbase requests
 
-      # ========== 安装 ChromeDriver（直连） ==========
+      # ============================================
+      # 4️⃣ 安装 ChromeDriver（直连）
+      # ============================================
       - name: 🔧 安装 ChromeDriver
         env:
           http_proxy: ""
@@ -74,19 +80,166 @@ jobs:
           seleniumbase install chromedriver ${CHROME_VERSION}
           chromedriver --version
 
-      # ========== 运行主脚本（直连，无代理环境变量） ==========
+      # ============================================
+      # 5️⃣ 启动 sing-box 代理（自适应 VLESS/VMess）
+      # ============================================
+      - name: 🚀 启动 sing-box 代理
+        env:
+          PROXY_LINK: ${{ secrets.US_PROXY }}
+        run: |
+          set +e
+          if [ -z "$PROXY_LINK" ]; then
+            echo "⏭️ US_PROXY 为空，跳过代理"
+            echo "GOST_PROXY=" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # 下载 sing-box
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget curl unzip
+
+          VERSION="1.8.0"
+          wget -q --timeout=60 --tries=3 "https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-amd64.tar.gz" -O sing-box.tar.gz || \
+          wget -q --timeout=60 --tries=3 "https://registry.npmmirror.com/-/binary/sing-box/${VERSION}/sing-box-${VERSION}-linux-amd64.tar.gz" -O sing-box.tar.gz
+
+          if [ ! -s sing-box.tar.gz ]; then
+            echo "⚠️ sing-box 下载失败，跳过代理"
+            echo "GOST_PROXY=" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          tar -xzf sing-box.tar.gz
+          mv sing-box-${VERSION}-linux-amd64/sing-box ./sing-box
+          chmod +x ./sing-box
+
+          # 使用 Python 解析链接并生成配置文件
+          cat > generate_config.py << 'EOF'
+          import sys, json, base64, urllib.parse, os
+
+          def parse_vless(url):
+              parts = urllib.parse.urlparse(url)
+              uuid = parts.username
+              server = parts.hostname
+              port = parts.port or 443
+              params = dict(urllib.parse.parse_qsl(parts.query))
+              flow = params.get('flow', '')
+              tls = params.get('security', '') in ['tls', 'reality'] or 'tls' in params
+              sni = params.get('sni', '')
+              fp = params.get('fp', '')
+              # 构造 outbound
+              outbound = {
+                  "type": "vless",
+                  "server": server,
+                  "server_port": port,
+                  "uuid": uuid,
+                  "flow": flow,
+                  "tls": {
+                      "enabled": tls,
+                      "server_name": sni or server,
+                      "utls": {"enabled": True, "fingerprint": fp or "chrome"}
+                  } if tls else {}
+              }
+              # 简化，移除空的字段
+              if not outbound["tls"]: del outbound["tls"]
+              return outbound
+
+          def parse_vmess(url):
+              # vmess://base64
+              b64 = url.replace('vmess://', '')
+              # 补齐 padding
+              b64 += '=' * (4 - len(b64) % 4)
+              try:
+                  data = json.loads(base64.b64decode(b64).decode('utf-8'))
+              except:
+                  sys.exit(1)
+              outbound = {
+                  "type": "vmess",
+                  "server": data.get('add', ''),
+                  "server_port": int(data.get('port', 443)),
+                  "uuid": data.get('id', ''),
+                  "security": data.get('scy', 'auto'),
+                  "alter_id": data.get('aid', 0),
+                  "tls": {
+                      "enabled": data.get('tls', '') in ['tls', 'reality', 'true', True],
+                      "server_name": data.get('sni', '') or data.get('host', '')
+                  },
+                  "transport": {
+                      "type": data.get('net', 'tcp'),
+                      "path": data.get('path', ''),
+                      "host": data.get('host', ''),
+                      "headers": {"Host": data.get('host', '')} if data.get('host') else {}
+                  }
+              }
+              # 清理空字段
+              if not outbound["tls"]["enabled"]:
+                  del outbound["tls"]
+              if not outbound["transport"]["path"] and not outbound["transport"]["host"]:
+                  del outbound["transport"]
+              return outbound
+
+          link = os.getenv('PROXY_LINK')
+          if link.startswith('vless://'):
+              out = parse_vless(link)
+          elif link.startswith('vmess://'):
+              out = parse_vmess(link)
+          else:
+              sys.exit(1)
+
+          config = {
+              "log": {"level": "info"},
+              "inbounds": [
+                  {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "port": 1080},
+                  {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "port": 1081}
+              ],
+              "outbounds": [out]
+          }
+          with open('config.json', 'w') as f:
+              json.dump(config, f, indent=2)
+          EOF
+
+          python3 generate_config.py
+          if [ $? -ne 0 ]; then
+            echo "⚠️ 解析代理链接失败，跳过代理"
+            echo "GOST_PROXY=" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # 启动 sing-box
+          nohup ./sing-box run -c config.json > /tmp/sing-box.log 2>&1 &
+          sleep 5
+
+          # 验证代理可用
+          if curl -s -x http://127.0.0.1:1080 -I https://google.com --max-time 10; then
+            echo "✅ sing-box 代理验证成功"
+            echo "GOST_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
+            echo "ALL_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
+            echo "http_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
+            echo "https_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
+            echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
+          else
+            echo "⚠️ 代理验证失败，跳过代理设置"
+            pkill -f sing-box || true
+            echo "GOST_PROXY=" >> $GITHUB_ENV
+          fi
+          set -e
+
+      # ============================================
+      # 6️⃣ 运行主脚本（使用代理）
+      # ============================================
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          # 不再传递 GOST_PROXY，脚本内 os.getenv('GOST_PROXY') 将返回 None
+          GOST_PROXY: ${{ env.GOST_PROXY }}   # 若代理生效则传递，否则为空
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           which chromedriver
           chromedriver --version
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
-      # ========== 上传调试文件 ==========
+      # ============================================
+      # 7️⃣ 上传调试文件
+      # ============================================
       - name: 📸 上传截图和 HTML
         if: always()
         uses: actions/upload-artifact@v4
@@ -97,7 +250,9 @@ jobs:
             *.html
           retention-days: 3
 
-      # ========== 清理旧工作流运行记录 ==========
+      # ============================================
+      # 8️⃣ 清理旧工作流运行记录
+      # ============================================
       - name: 🧹 清理旧的工作流运行记录
         if: always()
         env:
