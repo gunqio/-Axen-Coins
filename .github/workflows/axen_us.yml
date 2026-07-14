@@ -13,6 +13,9 @@ jobs:
       contents: read
 
     steps:
+      # ============================================
+      # 1️⃣ 下载私库脚本
+      # ============================================
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
@@ -29,7 +32,7 @@ jobs:
           python-version: '3.10'
 
       # ============================================
-      # 1️⃣ 安装 Chrome（直连，不走代理）
+      # 2️⃣ 安装 Chrome（直连，不走代理）
       # ============================================
       - name: 🛠️ 安装 Chrome
         uses: browser-actions/setup-chrome@latest
@@ -45,7 +48,7 @@ jobs:
           no-sudo: false
 
       # ============================================
-      # 2️⃣ 系统依赖（直连）
+      # 3️⃣ 系统依赖（直连）
       # ============================================
       - name: 🛠️ 安装系统依赖
         run: |
@@ -54,7 +57,7 @@ jobs:
           google-chrome --version
 
       # ============================================
-      # 3️⃣ 安装 Python 依赖（直连）
+      # 4️⃣ 安装 Python 依赖（直连）
       # ============================================
       - name: 🐍 安装 Python 依赖
         env:
@@ -66,7 +69,7 @@ jobs:
           pip install --no-cache-dir seleniumbase requests
 
       # ============================================
-      # 4️⃣ 安装 ChromeDriver（直连）
+      # 5️⃣ 安装 ChromeDriver（直连）
       # ============================================
       - name: 🔧 安装 ChromeDriver
         env:
@@ -81,7 +84,7 @@ jobs:
           chromedriver --version
 
       # ============================================
-      # 5️⃣ 启动 sing-box 代理（支持 socks5/vless/vmess）
+      # 6️⃣ 启动 sing-box 代理（支持 socks5/vless/vmess）
       # ============================================
       - name: 🚀 启动 sing-box 代理
         env:
@@ -220,7 +223,7 @@ else:
     print(f"❌ 不支持的代理协议: {link[:30]}", file=sys.stderr)
     sys.exit(1)
 
-# 修复：sing-box 1.8.0 使用 listen_port 而非 port
+# sing-box 1.8.0 使用 listen_port 而非 port
 config = {
     "log": {"level": "info"},
     "inbounds": [
@@ -253,7 +256,7 @@ ENDOFPYTHON
           nohup ./sing-box run -c config.json > /tmp/sing-box.log 2>&1 &
           sleep 5
 
-          # 验证代理
+          # 验证代理（修正 URL 写法）
           if curl -s -x http://127.0.0.1:1080 -I https://google.com --max-time 10; then
             echo "✅ sing-box 代理验证成功"
             echo "GOST_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
@@ -272,7 +275,7 @@ ENDOFPYTHON
           set -e
 
       # ============================================
-      # 6️⃣ 运行主脚本（使用代理，若有）
+      # 7️⃣ 运行主脚本（使用代理，若有）
       # ============================================
       - name: 🚀 运行脚本
         env:
@@ -286,7 +289,7 @@ ENDOFPYTHON
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
       # ============================================
-      # 7️⃣ 上传调试文件
+      # 8️⃣ 上传调试文件
       # ============================================
       - name: 📸 上传截图和 HTML
         if: always()
@@ -299,7 +302,7 @@ ENDOFPYTHON
           retention-days: 3
 
       # ============================================
-      # 8️⃣ 清理旧工作流运行记录
+      # 9️⃣ 清理旧工作流运行记录
       # ============================================
       - name: 🧹 清理旧的工作流运行记录
         if: always()
