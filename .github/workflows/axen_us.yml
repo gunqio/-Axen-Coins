@@ -58,26 +58,15 @@ jobs:
 
           echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
           
-      - name: 🛠️ 安装 Chrome for Testing 和系统依赖
+      - name: 🛠️ 安装 Chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+          
+      - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            xvfb \
-            wget \
-            unzip \
-            libnss3 \
-            libfontconfig1 \
-            libgbm1
-
-          # 下载 Chrome for Testing（专为自动化测试设计，无依赖问题）
-          CHROME_VERSION="150.0.7871.115"  # 与 ChromeDriver 版本一致
-          wget -q --timeout=60 "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" -O chrome.zip || \
-          wget -q --timeout=60 "https://registry.npmmirror.com/-/binary/chrome-for-testing/${CHROME_VERSION}/linux64/chrome-linux64.zip" -O chrome.zip
-
-          unzip -q chrome.zip
-          sudo mv chrome-linux64 /opt/chrome
-          sudo ln -sf /opt/chrome/chrome /usr/local/bin/google-chrome
-          
+          sudo apt-get install -y -qq xvfb libnss3 libfontconfig1 libgbm1
           google-chrome --version
           
       - name: 🐍 安装 Python 依赖
@@ -89,13 +78,8 @@ jobs:
           CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+' || echo "150.0.7871.115")
           echo "Chrome 版本: $CHROME_VERSION"
           
-          # 直接下载对应版本的 ChromeDriver
-          wget -q --timeout=60 "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O chromedriver.zip || \
-          wget -q --timeout=60 "https://registry.npmmirror.com/-/binary/chromedriver/${CHROME_VERSION}/chromedriver_linux64.zip" -O chromedriver.zip
-          
-          unzip -q chromedriver.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver || sudo mv chromedriver /usr/local/bin/chromedriver
-          sudo chmod +x /usr/local/bin/chromedriver
+          # 直接用 seleniumbase 安装对应版本
+          seleniumbase install chromedriver ${CHROME_VERSION}
           chromedriver --version
           
       - name: 🚀 运行脚本
