@@ -149,6 +149,15 @@ jobs:
           # 启动 Xray，本地 HTTP 代理 :8080
           ./xray run -c xray.json > /tmp/xray.log 2>&1 &
 
+          # 等待代理就绪（最多 10 秒）
+          for i in {1..10}; do
+            if curl -s -x http://127.0.0.1:8080 https://pypi.org >/dev/null; then
+              echo "代理已就绪"
+              break
+            fi
+            sleep 1
+          done
+
           # 设置代理环境变量，给 Python / SeleniumBase 使用
           echo "XRAY_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
           echo "ALL_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
@@ -173,8 +182,9 @@ jobs:
 
       - name: 🐍 安装 Python 依赖
         run: |
-          pip install --upgrade pip
-          pip install --retries 5 --timeout 120 seleniumbase || pip install --retries 5 --timeout 120 seleniumbase
+          # 使用代理和信任主机解决 SSL 错误
+          pip install --upgrade pip --trusted-host pypi.org --trusted-host files.pythonhosted.org
+          pip install --proxy=http://127.0.0.1:8080 --trusted-host pypi.org --trusted-host files.pythonhosted.org seleniumbase
           seleniumbase install chromedriver
 
       - name: 🚀 运行脚本
@@ -199,12 +209,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-          count=0
-          for run_id in $runs; do
-            count=$((count + 1))
-            if [ $count -gt 1 ]; then
-              echo "删除运行记录: $run_id"
-              gh run delete $run_id --repo ${{ github.repository }} || true
-            fi
-          done
+          # 清理时临时禁用代理，避免 API 调用失败
+          unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId' 2>/dev/null || echo "")
+          if [ -n "$runs" ]; then
+            count=0
+            for run_id in $runs; do
+              count=$((count + 1))
+              if [ $count -gt 1 ]; then
+                echo "删除运行记录: $run_id"
+                gh run delete $run_id --repo ${{ github.repository }} || true
+              fi
+            done
+          else
+            echo "未获取到运行记录，跳过清理"
+          fi
