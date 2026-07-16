@@ -25,17 +25,18 @@ jobs:
         with:
           python-version: '3.10'
           
-      - name: ⚙ 设置 GOST 代理转发
+      - name: ⚙ 启动 GOST 代理（仅脚本使用）
         env:
           NODE_LINK: ${{ secrets.US_PROXY }}
         run: |
           if [ -z "$NODE_LINK" ]; then
-            echo "US_PROXY 为空，跳过代理"
+            echo "ℹ️ US_PROXY 为空，跳过代理启动"
+            touch /tmp/skip_gost
             exit 0
           fi
 
-          sudo apt-get update
-          sudo apt-get install -y wget
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget
 
           VERSION="2.11.5"
           wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost-linux-amd64-${VERSION}.gz"
@@ -44,19 +45,22 @@ jobs:
           mv "gost-linux-amd64-${VERSION}" gost
 
           ./gost -L=:1080 -F "$NODE_LINK" > /tmp/gost.log 2>&1 &
-          sleep 2
+          sleep 3
 
-          echo "ALL_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "http_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "https_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
-
-          echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
+          # 验证端口是否监听
+          if ss -tlnp 2>/dev/null | grep -q ':1080'; then
+            echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
+            echo "http://127.0.0.1:1080" > /tmp/gost_proxy_url
+          else
+            echo "⚠️ GOST 端口未监听，可能启动失败"
+            cat /tmp/gost.log || true
+            touch /tmp/skip_gost
+          fi
           
       - name: 🛠️ 安装系统依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
             google-chrome-stable \
             xvfb \
             x11-utils \
@@ -64,7 +68,9 @@ jobs:
             scrot
             
       - name: 🐍 安装 Python 依赖
+        # 关键：取消全局代理，让 pip 直连 PyPI
         run: |
+          unset http_proxy https_proxy ALL_PROXY HTTP_PROXY HTTPS_PROXY
           pip install seleniumbase
           seleniumbase install chromedriver
           
@@ -72,10 +78,16 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          PROXY_SERVER: http://127.0.0.1:1080
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
+          # 仅当 GOST 成功启动时才注入代理变量，避免污染其他工具
+          if [ ! -f /tmp/skip_gost ] && [ -f /tmp/gost_proxy_url ]; then
+            export GOST_PROXY=$(cat /tmp/gost_proxy_url)
+            echo "🌐 脚本使用代理: $GOST_PROXY"
+          else
+            echo "🌐 脚本直连模式"
+          fi
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
           
       - name: 📸 上传截图
@@ -90,6 +102,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 关键：取消代理，让 gh CLI 直连 GitHub API
+          unset http_proxy https_proxy ALL_PROXY HTTP_PROXY HTTPS_PROXY
           runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
           count=0
           for run_id in $runs; do
