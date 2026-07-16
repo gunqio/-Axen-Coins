@@ -1,14 +1,14 @@
 name: Axen-US
 on:
   workflow_dispatch:
-  
+
 jobs:
   Renew-bot:
     runs-on: ubuntu-latest
     permissions:
       actions: write
       contents: read
-    
+
     steps:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
@@ -16,48 +16,153 @@ jobs:
           repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
-          
+
       - name: 📂 移动脚本到工作目录
         run: mv private/axen_coins.py axen_coins.py
-        
+
       - name: 🐍 设置 Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
-      - name: ⚙ 设置 GOST 代理转发
+
+      - name: ⚙ 设置 Xray 代理（自适应 vless/vmess）
         env:
-          NODE_LINK: ${{ secrets.US_PROXY }}
+          NODE_LINK: ${{ secrets.US_NODE_LINK }}  # 这里填 vless:// 或 vmess:// 链接
         run: |
           if [ -z "$NODE_LINK" ]; then
-            echo "US_PROXY 为空，跳过代理"
+            echo "US_NODE_LINK 为空，跳过代理"
             echo "SKIP_PROXY=true" >> $GITHUB_ENV
             exit 0
           fi
 
           sudo apt-get update
-          sudo apt-get install -y wget
+          sudo apt-get install -y wget unzip python3
 
-          VERSION="2.11.5"
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost-linux-amd64-${VERSION}.gz"
-          gunzip -f "gost-linux-amd64-${VERSION}.gz"
-          chmod +x "gost-linux-amd64-${VERSION}"
-          mv "gost-linux-amd64-${VERSION}" gost
+          XRAY_VERSION="v1.8.0"
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          unzip Xray-linux-64.zip
+          chmod +x xray
 
-          ./gost -L=:1080 -F "$NODE_LINK" > /tmp/gost.log 2>&1 &
-          sleep 2
+          # 解析 US_NODE_LINK，生成 xray.json（支持 vmess:// 和 vless://）
+          python3 << 'PYCODE'
+import os, json, base64, urllib.parse
 
-          # 大小写都写，确保各类工具都能识别
-          echo "ALL_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "HTTP_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "HTTPS_PROXY=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "http_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
-          echo "https_proxy=http://127.0.0.1:1080" >> $GITHUB_ENV
+node = os.environ["NODE_LINK"].strip()
+
+def base_config():
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "listen": "127.0.0.1",
+                "port": 8080,
+                "protocol": "http"
+            }
+        ],
+        "outbounds": []
+    }
+
+cfg = base_config()
+
+if node.startswith("vmess://"):
+    raw = node[len("vmess://"):]
+    # vmess 分享通常是 base64 JSON
+    padded = raw + "=" * ((4 - len(raw) % 4) % 4)
+    data = json.loads(base64.b64decode(padded).decode())
+    address = data["add"]
+    port = int(data["port"])
+    uuid = data["id"]
+    net = data.get("net", "tcp")
+    security = "tls" if data.get("tls") == "tls" else "none"
+
+    outbound = {
+        "protocol": "vmess",
+        "settings": {
+            "vnext": [
+                {
+                    "address": address,
+                    "port": port,
+                    "users": [
+                        {
+                            "id": uuid,
+                            "security": data.get("security", "auto")
+                        }
+                    ]
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": net,
+            "security": security
+        }
+    }
+
+    if net == "ws":
+        path = data.get("path", "/")
+        outbound["streamSettings"]["wsSettings"] = {"path": path}
+
+    cfg["outbounds"].append(outbound)
+
+elif node.startswith("vless://"):
+    # vless://uuid@host:port?type=ws&security=tls&path=/xxx&...
+    u = urllib.parse.urlsplit(node)
+    uuid = u.username
+    host = u.hostname
+    port = u.port
+    qs = urllib.parse.parse_qs(u.query)
+    net = qs.get("type", ["tcp"])[0]
+    security = qs.get("security", ["none"])[0]
+    path = qs.get("path", [""])[0]
+
+    outbound = {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": host,
+                    "port": port,
+                    "users": [
+                        {
+                            "id": uuid,
+                            "encryption": "none"
+                        }
+                    ]
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": net,
+            "security": security
+        }
+    }
+
+    if net == "ws" and path:
+        outbound["streamSettings"]["wsSettings"] = {"path": path}
+
+    cfg["outbounds"].append(outbound)
+
+else:
+    raise SystemExit("Unsupported node link protocol: " + node)
+
+with open("xray.json", "w") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+PYCODE
+
+          # 启动 Xray，本地 HTTP 代理 :8080
+          ./xray run -c xray.json > /tmp/xray.log 2>&1 &
+
+          # 设置代理环境变量，给 Python / SeleniumBase 使用
+          echo "XRAY_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "ALL_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "HTTP_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "HTTPS_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
           echo "NO_PROXY=localhost,127.0.0.1" >> $GITHUB_ENV
           echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
 
-          echo "✅ GOST 代理已启动: http://127.0.0.1:1080"
-          
+          echo "✅ Xray 代理已启动: http://127.0.0.1:8080"
+
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
@@ -67,31 +172,30 @@ jobs:
             x11-utils \
             xdotool \
             scrot
-            
+
       - name: 🐍 安装 Python 依赖
         run: |
           pip install --upgrade pip
-          # 增加重试和超时，防止网络波动中断
           pip install --retries 5 --timeout 120 seleniumbase || pip install --retries 5 --timeout 120 seleniumbase
           seleniumbase install chromedriver
-          
+
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          GOST_PROXY: http://127.0.0.1:1080   # ← 修复：与脚本 os.getenv('GOST_PROXY') 对应
+          XRAY_PROXY: http://127.0.0.1:8080
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
-          
+
       - name: 📸 上传截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
           path: "*.png"
-          
+
       - name: 🧹 清理旧的工作流运行记录
         if: always()
         env:
