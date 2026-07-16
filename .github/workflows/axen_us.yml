@@ -13,7 +13,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong
+          repository: gunqio/zhiyong          # ← 已修改为指定地址
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
@@ -25,152 +25,56 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: ⚙ 设置 Xray 代理（自适应 vless/vmess）
+      - name: ⚙ 设置代理 (sing-box)
+        id: singbox
         env:
-          NODE_LINK: ${{ secrets.US_NODE_LINK }}
+          NODE_LINK: ${{ secrets.US_PROXY }}
         run: |
-          if [ -z "$NODE_LINK" ]; then
-            echo "US_NODE_LINK 为空，跳过代理"
-            echo "SKIP_PROXY=true" >> $GITHUB_ENV
-            exit 0
-          fi
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
-          sudo apt-get update
-          sudo apt-get install -y wget unzip python3
+      - name: ⚠️ 代理失败写回 Cron 1分钟后重试
+        if: ${{ failure() && steps.singbox.outcome == 'failure' }}
+        env:
+          CRON_JOB: ${{ secrets.US_CRON }}
+          TG_BOT: ${{ secrets.TG_BOT }}
+        run: |
+          python3 - <<'EOF'
+          import os, json, urllib.request, urllib.parse, datetime
+          from datetime import timedelta
 
-          XRAY_VERSION="v1.8.0"
-          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
-          unzip Xray-linux-64.zip
-          chmod +x xray
+          cron_job = os.environ.get("CRON_JOB", "")
+          if cron_job and "," in cron_job:
+              api_key, job_id = [x.strip() for x in cron_job.split(",", 1)]
+              next_run = datetime.datetime.utcnow() + timedelta(hours=8, minutes=1)
+              data = {"job": {"schedule": {
+                  "timezone": "Asia/Shanghai", "expiresAt": 0,
+                  "hours": [next_run.hour], "minutes": [next_run.minute],
+                  "mdays": [-1], "months": [-1], "wdays": [-1],
+              }}}
+              payload = json.dumps(data).encode()
+              req = urllib.request.Request(
+                  f"https://api.cron-job.org/jobs/{job_id}",
+                  data=payload,
+                  headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                  method="PATCH"
+              )
+              urllib.request.urlopen(req, timeout=15)
+              print(f"🔁 代理失败，已写回Cron：{next_run.hour:02d}:{next_run.minute:02d} 重试")
 
-          # 解析 US_NODE_LINK，生成 xray.json（支持 vmess:// 和 vless://）
-          python3 << 'PYCODE'
-          import os, json, base64, urllib.parse
-
-          node = os.environ["NODE_LINK"].strip()
-
-          def base_config():
-              return {
-                  "log": {"loglevel": "warning"},
-                  "inbounds": [
-                      {
-                          "listen": "127.0.0.1",
-                          "port": 8080,
-                          "protocol": "http"
-                      }
-                  ],
-                  "outbounds": []
-              }
-
-          cfg = base_config()
-
-          if node.startswith("vmess://"):
-              raw = node[len("vmess://"):]
-              padded = raw + "=" * ((4 - len(raw) % 4) % 4)
-              data = json.loads(base64.b64decode(padded).decode())
-              address = data["add"]
-              port = int(data["port"])
-              uuid = data["id"]
-              net = data.get("net", "tcp")
-              security = "tls" if data.get("tls") == "tls" else "none"
-
-              outbound = {
-                  "protocol": "vmess",
-                  "settings": {
-                      "vnext": [
-                          {
-                              "address": address,
-                              "port": port,
-                              "users": [
-                                  {
-                                      "id": uuid,
-                                      "security": data.get("security", "auto")
-                                  }
-                              ]
-                          }
-                      ]
-                  },
-                  "streamSettings": {
-                      "network": net,
-                      "security": security
-                  }
-              }
-
-              if net == "ws":
-                  path = data.get("path", "/")
-                  outbound["streamSettings"]["wsSettings"] = {"path": path}
-
-              cfg["outbounds"].append(outbound)
-
-          elif node.startswith("vless://"):
-              u = urllib.parse.urlsplit(node)
-              uuid = u.username
-              host = u.hostname
-              port = u.port
-              qs = urllib.parse.parse_qs(u.query)
-              net = qs.get("type", ["tcp"])[0]
-              security = qs.get("security", ["none"])[0]
-              path = qs.get("path", [""])[0]
-
-              outbound = {
-                  "protocol": "vless",
-                  "settings": {
-                      "vnext": [
-                          {
-                              "address": host,
-                              "port": port,
-                              "users": [
-                                  {
-                                      "id": uuid,
-                                      "encryption": "none"
-                                  }
-                              ]
-                          }
-                      ]
-                  },
-                  "streamSettings": {
-                      "network": net,
-                      "security": security
-                  }
-              }
-
-              if net == "ws" and path:
-                  outbound["streamSettings"]["wsSettings"] = {"path": path}
-
-              cfg["outbounds"].append(outbound)
-
-          else:
-              raise SystemExit("Unsupported node link protocol: " + node)
-
-          with open("xray.json", "w") as f:
-              json.dump(cfg, f, ensure_ascii=False, indent=2)
-          PYCODE
-
-          # 启动 Xray
-          ./xray run -c xray.json > /tmp/xray.log 2>&1 &
-
-          # 等待代理就绪（最多 5 秒），若失败则跳过代理设置
-          sleep 2
-          if curl -s -x http://127.0.0.1:8080 https://pypi.org --connect-timeout 3 > /dev/null; then
-            echo "✅ 代理已就绪"
-            # 设置代理环境变量
-            echo "SKIP_PROXY=false" >> $GITHUB_ENV
-            echo "XRAY_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "ALL_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "HTTP_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "HTTPS_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
-            echo "NO_PROXY=localhost,127.0.0.1" >> $GITHUB_ENV
-            echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
-            echo "✅ Xray 代理已启动: http://127.0.0.1:8080"
-          else
-            echo "❌ 代理启动失败或无法连接，跳过代理"
-            echo "SKIP_PROXY=true" >> $GITHUB_ENV
-            pkill -f xray || true
-          fi
+          tg_bot = os.environ.get("TG_BOT", "")
+          if tg_bot and "," in tg_bot:
+              chat_id, token = [x.strip() for x in tg_bot.split(",", 1)]
+              msg = "⚠️ Axen US 代理启动失败，已安排1分钟后重试"
+              urllib.request.urlopen(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode(),
+                  timeout=10
+              )
+              print("📨 TG 推送成功")
+          EOF
 
       - name: 🛠️ 安装系统依赖
+        if: ${{ steps.singbox.outcome == 'success' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -181,24 +85,19 @@ jobs:
             scrot
 
       - name: 🐍 安装 Python 依赖
+        if: ${{ steps.singbox.outcome == 'success' }}
         run: |
-          pip install --upgrade pip
-          # 使用 HTTP 源彻底避免 SSL 问题（无论代理是否启用）
-          pip install --index-url=http://pypi.org/simple/ --trusted-host pypi.org seleniumbase
+          pip install seleniumbase
           seleniumbase install chromedriver
 
       - name: 🚀 运行脚本
+        if: ${{ steps.singbox.outcome == 'success' }}
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
-          XRAY_PROXY: http://127.0.0.1:8080
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
-          # 如果代理被跳过，则 unset 相关变量，避免脚本误用
-          if [ "$SKIP_PROXY" = "true" ]; then
-            unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY XRAY_PROXY
-          fi
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
       - name: 📸 上传截图
@@ -213,18 +112,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 清理时禁用代理，避免 API 调用失败
-          unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
-          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId' 2>/dev/null || echo "")
-          if [ -n "$runs" ]; then
-            count=0
-            for run_id in $runs; do
-              count=$((count + 1))
-              if [ $count -gt 1 ]; then
-                echo "删除运行记录: $run_id"
-                gh run delete $run_id --repo ${{ github.repository }} || true
-              fi
-            done
-          else
-            echo "未获取到运行记录，跳过清理"
-          fi
+          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "删除运行记录: $run_id"
+              gh run delete $run_id --repo ${{ github.repository }} || true
+            fi
+          done
