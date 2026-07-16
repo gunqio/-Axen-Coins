@@ -1,13 +1,16 @@
 name: Axen-US
+
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [axen_auto_task]
 
 jobs:
-  Renew-bot:
+  run_axen_us:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
+    # ✅ 在作业级别定义环境变量，方便 if 条件引用
+    env:
+      GOST_PROXY: ${{ secrets.US_PROXY }}
 
     steps:
       - name: 📥 下载私库脚本
@@ -25,114 +28,55 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ============================================================
-      # 1. 先装依赖（此时绝对不能走代理，否则 PyPI 被墙）
-      # ============================================================
+      # ✅ 修正：if 条件改为判断作业级 env.GOST_PROXY 是否非空
+      - name: 🛡️ 启动 GOST 代理转发
+        if: env.GOST_PROXY != ''
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          echo "📦 GOST 版本: $VERSION"
+          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
+          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
+          chmod +x gost
+          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
+          sleep 3
+          # ✅ 检查进程是否启动成功
+          if pgrep -x "gost" > /dev/null; then
+            echo "✅ GOST 进程运行中"
+          else
+            echo "❌ GOST 启动失败，日志如下："
+            cat gost.log
+            exit 1
+          fi
+          # 测试代理连通性
+          echo "测试代理连通性..."
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "⚠️ 代理连通失败"
+
+      - name: 🛠️ 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            google-chrome-stable \
+            xvfb \
+            x11-utils \
+            xdotool \
+            scrot
+
       - name: 🐍 安装 Python 依赖
         run: |
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      - name: 🛠️ 安装系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable xvfb x11-utils xdotool scrot
-
-      # ============================================================
-      # 2. 启动 sing-box（setup_proxy.sh 同时开 SOCKS5:1080 和 HTTP:1081）
-      # ============================================================
-      - name: ⚙ 设置代理 (sing-box)
-        id: singbox
-        env:
-          NODE_LINK: ${{ secrets.US_PROXY }}
-        run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
-          sleep 2
-
-      # ============================================================
-      # 3. 验证代理（用 HTTP:1081，curl 和 seleniumbase 都兼容）
-      # ============================================================
-      - name: 🌐 验证代理
-        id: proxytest
-        if: ${{ steps.singbox.outcome == 'success' }}
-        run: |
-          for i in 1 2 3; do
-            IP=$(curl -x http://127.0.0.1:1081 -s --max-time 10 https://api.ip.sb/ip)
-            [ -n "$IP" ] && echo "✅ 代理正常，出口 IP: $IP" && exit 0
-            sleep 3
-          done
-          echo "❌ 代理测试失败"
-          exit 1
-
-      # ============================================================
-      # 4. 代理失败 → 写回 Cron 1分钟后重试
-      # ============================================================
-      - name: ⚠️ 代理失败写回 Cron 1分钟后重试
-        if: ${{ failure() && (steps.singbox.outcome == 'failure' || steps.proxytest.outcome == 'failure') }}
-        env:
-          CRON_JOB: ${{ secrets.US_CRON }}
-          TG_BOT: ${{ secrets.TG_BOT }}
-        run: |
-          python3 - <<'EOF'
-          import os, json, urllib.request, urllib.parse, datetime
-          from datetime import timedelta
-
-          cron_job = os.environ.get("CRON_JOB", "")
-          if cron_job and "," in cron_job:
-              api_key, job_id = [x.strip() for x in cron_job.split(",", 1)]
-              next_run = datetime.datetime.utcnow() + timedelta(hours=8, minutes=1)
-              data = {"job": {"schedule": {
-                  "timezone": "Asia/Shanghai", "expiresAt": 0,
-                  "hours": [next_run.hour], "minutes": [next_run.minute],
-                  "mdays": [-1], "months": [-1], "wdays": [-1],
-              }}}
-              payload = json.dumps(data).encode()
-              req = urllib.request.Request(
-                  f"https://api.cron-job.org/jobs/{job_id}",
-                  data=payload,
-                  headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                  method="PATCH"
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=15)
-                  print(f"🔁 已写回 Cron：{next_run.hour:02d}:{next_run.minute:02d} 重试")
-              except Exception as e:
-                  print(f"⚠️ 写回 Cron 失败: {e}")
-
-          tg_bot = os.environ.get("TG_BOT", "")
-          if tg_bot and "," in tg_bot:
-              chat_id, token = [x.strip() for x in tg_bot.split(",", 1)]
-              msg = "⚠️ Axen US 代理启动失败，已安排1分钟后重试"
-              try:
-                  urllib.request.urlopen(
-                      f"https://api.telegram.org/bot{token}/sendMessage",
-                      data=urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode(),
-                      timeout=10
-                  )
-                  print("📨 TG 推送成功")
-              except Exception as e:
-                  print(f"⚠️ TG 推送失败: {e}")
-          EOF
-
-      # ============================================================
-      # 5. 运行脚本（仅本步骤注入 HTTP 代理，不影响前面 pip）
-      # ============================================================
       - name: 🚀 运行脚本
-        if: ${{ steps.proxytest.outcome == 'success' }}
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
-          HTTP_PROXY: http://127.0.0.1:1081
-          HTTPS_PROXY: http://127.0.0.1:1081
-          NO_PROXY: localhost,127.0.0.1
+          # ✅ 传递 GOST 代理地址给 Python 脚本（本地转发）
+          GOST_PROXY: http://127.0.0.1:8080
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
-      # ============================================================
-      # 6. 上传截图（无论成功失败）
-      # ============================================================
       - name: 📸 上传截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -140,20 +84,13 @@ jobs:
           name: debug-screenshots
           path: "*.png"
 
-      # ============================================================
-      # 7. 清理旧的工作流运行记录
-      # ============================================================
-      - name: 🧹 清理旧的工作流运行记录
+      - name: 🔔 通知
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+          WORKER_AUTH_TOKEN: ${{ secrets.CF_WORKER_AUTH_TOKEN }}
         run: |
-          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-          count=0
-          for run_id in $runs; do
-            count=$((count + 1))
-            if [ $count -gt 1 ]; then
-              echo "删除运行记录: $run_id"
-              gh run delete $run_id --repo ${{ github.repository }} || true
-            fi
-          done
+          curl -X POST "$WORKER_URL" \
+            -H "Authorization: Bearer $WORKER_AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "completed"}'
