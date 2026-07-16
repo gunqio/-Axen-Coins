@@ -25,12 +25,13 @@ jobs:
         with:
           python-version: '3.10'
 
+      # ===== 修正点：代理安装步骤，添加 sed 替换 curl -s 为 curl -sL =====
       - name: ⚙ 设置代理 (sing-box)
         id: singbox
         env:
           NODE_LINK: ${{ secrets.US_PROXY }}
         run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh | sed 's/curl -s "/curl -sL "/g')
 
       - name: ⚠️ 代理失败写回 Cron 1分钟后重试
         if: ${{ failure() && steps.singbox.outcome == 'failure' }}
