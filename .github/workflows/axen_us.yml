@@ -26,169 +26,50 @@ jobs:
           python-version: '3.10'
 
       # ============================================================
-      # 1. 先安装 Python 依赖（此时不走代理，避免 PyPI 被墙）
+      # 1. 先装依赖（此时绝对不能走代理，否则 PyPI 被墙）
       # ============================================================
       - name: 🐍 安装 Python 依赖
         run: |
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      # ============================================================
-      # 2. 安装系统依赖（Chrome, Xvfb 等）
-      # ============================================================
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            google-chrome-stable \
-            xvfb \
-            x11-utils \
-            xdotool \
-            scrot \
-            jq
+          sudo apt-get install -y google-chrome-stable xvfb x11-utils xdotool scrot
 
       # ============================================================
-      # 3. 安装 sing-box（直接从官方 Release 下载，不依赖第三方脚本）
+      # 2. 启动 sing-box（用你的脚本）
       # ============================================================
-      - name: ⚙ 安装 sing-box
+      - name: ⚙ 设置代理 (sing-box)
         id: singbox
         env:
           NODE_LINK: ${{ secrets.US_PROXY }}
         run: |
-          SINGBOX_VER=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
-          ARCH="amd64"
-          DEB_URL="https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VER}/sing-box_${SINGBOX_VER#v}_linux_${ARCH}.deb"
-          echo "Downloading $DEB_URL"
-          wget -q "$DEB_URL" -O /tmp/sing-box.deb
-          sudo dpkg -i /tmp/sing-box.deb || sudo apt-get install -f -y
-          sing-box version
-
-      # ============================================================
-      # 4. 生成 sing-box 配置文件
-      # ============================================================
-      - name: 🔧 生成 vmess 配置
-        id: genconfig
-        if: ${{ steps.singbox.outcome == 'success' }}
-        env:
-          NODE_LINK: ${{ secrets.US_PROXY }}
-        run: |
-          python3 - <<'EOF'
-          import os, base64, json, urllib.parse, sys
-
-          vmess = os.environ.get('NODE_LINK', '').strip()
-          if not vmess.startswith('vmess://'):
-              print('❌ NODE_LINK 不是 vmess 链接')
-              sys.exit(1)
-
-          vmess = vmess[8:]
-          try:
-              vmess = urllib.parse.unquote(vmess)
-              config = json.loads(base64.b64decode(vmess).decode('utf-8'))
-          except Exception as e:
-              print(f'❌ 解码 vmess 失败: {e}')
-              sys.exit(1)
-
-          # sing-box 1.x 标准 vmess outbound
-          outbound = {
-              "type": "vmess",
-              "tag": "proxy",
-              "server": config['add'],
-              "server_port": int(config['port']),
-              "uuid": config['id'],
-              "security": config.get('scy', 'auto'),
-              "alter_id": int(config.get('aid', 0)),
-          }
-
-          # 传输层
-          net = config.get('net', 'tcp')
-          if net == 'ws':
-              outbound['transport'] = {
-                  "type": "ws",
-                  "path": config.get('path', '/'),
-                  "headers": {"Host": config.get('host', config['add'])}
-              }
-          elif net == 'grpc':
-              outbound['transport'] = {
-                  "type": "grpc",
-                  "service_name": config.get('path', '')
-              }
-
-          # TLS
-          if config.get('tls') == 'tls' or config.get('security') == 'tls':
-              outbound['tls'] = {
-                  "enabled": True,
-                  "server_name": config.get('sni', config.get('host', config['add']))
-              }
-
-          singbox_config = {
-              "log": {"level": "info"},
-              "inbounds": [{
-                  "type": "mixed",
-                  "listen": "127.0.0.1",
-                  "listen_port": 1080
-              }],
-              "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
-              "route": {
-                  "final": "proxy",
-                  "auto_detect_interface": True,
-                  "rules": [
-                      {"ip_cidr": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"], "outbound": "direct"}
-                  ]
-              }
-          }
-
-          with open('/tmp/config.json', 'w') as f:
-              json.dump(singbox_config, f, indent=2)
-          print('✅ sing-box 配置文件生成成功')
-          EOF
-
-          sudo mkdir -p /etc/sing-box
-          sudo mv /tmp/config.json /etc/sing-box/config.json
-          cat /etc/sing-box/config.json
-
-      # ============================================================
-      # 5. 启动 sing-box 并严格验证代理可用性
-      # ============================================================
-      - name: 🚀 启动并验证代理
-        id: proxystart
-        if: ${{ steps.genconfig.outcome == 'success' }}
-        run: |
-          # 清理可能残留的进程
-          pkill -f sing-box || true
-          sleep 1
-
-          # 后台启动并保留日志
-          sudo nohup sing-box run -c /etc/sing-box/config.json > /tmp/sing-box.log 2>&1 &
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
           sleep 5
+          pgrep -f sing-box || { echo "❌ sing-box 未启动"; exit 1; }
 
-          # 检查进程是否存在
-          if ! pgrep -f "sing-box run" > /dev/null; then
-            echo "❌ sing-box 进程未启动"
-            cat /tmp/sing-box.log
-            exit 1
-          fi
-
-          # 严格测试代理：必须成功，否则本步骤失败
-          echo "🌐 测试代理出口..."
+      # ============================================================
+      # 3. 严格验证代理（失败就真失败，不掩盖）
+      # ============================================================
+      - name: 🌐 验证代理
+        id: proxytest
+        if: ${{ steps.singbox.outcome == 'success' }}
+        run: |
           for i in 1 2 3; do
             IP=$(curl -s --max-time 10 -x http://127.0.0.1:1080 https://api.ip.sb/ip)
-            if [ -n "$IP" ]; then
-              echo "✅ 代理正常，出口 IP: $IP"
-              exit 0
-            fi
-            echo "⏳ 第 $i 次重试..."
+            [ -n "$IP" ] && echo "✅ 代理正常，出口 IP: $IP" && exit 0
             sleep 3
           done
-
-          echo "❌ 代理测试失败，sing-box 日志:"
-          cat /tmp/sing-box.log
+          echo "❌ 代理测试失败"
           exit 1
 
       # ============================================================
-      # 6. 代理失败 → 写回 Cron 1 分钟后重试
+      # 4. 代理失败 → 写回 Cron 1分钟后重试
       # ============================================================
       - name: ⚠️ 代理失败写回 Cron 1分钟后重试
-        if: ${{ failure() && (steps.singbox.outcome == 'failure' || steps.proxystart.outcome == 'failure') }}
+        if: ${{ failure() && (steps.singbox.outcome == 'failure' || steps.proxytest.outcome == 'failure') }}
         env:
           CRON_JOB: ${{ secrets.US_CRON }}
           TG_BOT: ${{ secrets.TG_BOT }}
@@ -235,10 +116,10 @@ jobs:
           EOF
 
       # ============================================================
-      # 7. 运行 Axen 脚本（仅在代理验证通过后，且只对该步骤注入代理变量）
+      # 5. 运行脚本（仅本步骤注入代理，不影响前面 pip）
       # ============================================================
       - name: 🚀 运行脚本
-        if: ${{ steps.proxystart.outcome == 'success' }}
+        if: ${{ steps.proxytest.outcome == 'success' }}
         env:
           PYTHONIOENCODING: utf-8
           AXEN_ACCOUNT: ${{ secrets.US_ACCOUNT }}
@@ -250,9 +131,6 @@ jobs:
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
-      # ============================================================
-      # 8. 上传截图（无论成功失败）
-      # ============================================================
       - name: 📸 上传截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -260,9 +138,6 @@ jobs:
           name: debug-screenshots
           path: "*.png"
 
-      # ============================================================
-      # 9. 清理旧工作流运行记录
-      # ============================================================
       - name: 🧹 清理旧的工作流运行记录
         if: always()
         env:
