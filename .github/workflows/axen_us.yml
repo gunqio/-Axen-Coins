@@ -146,29 +146,29 @@ jobs:
               json.dump(cfg, f, ensure_ascii=False, indent=2)
           PYCODE
 
-          # 启动 Xray，本地 HTTP 代理 :8080
+          # 启动 Xray
           ./xray run -c xray.json > /tmp/xray.log 2>&1 &
 
-          # 等待代理就绪（最多 10 秒）
-          for i in {1..10}; do
-            if curl -s -x http://127.0.0.1:8080 https://pypi.org >/dev/null; then
-              echo "代理已就绪"
-              break
-            fi
-            sleep 1
-          done
-
-          # 设置代理环境变量，给 Python / SeleniumBase 使用
-          echo "XRAY_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "ALL_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "HTTP_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "HTTPS_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "NO_PROXY=localhost,127.0.0.1" >> $GITHUB_ENV
-          echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
-
-          echo "✅ Xray 代理已启动: http://127.0.0.1:8080"
+          # 等待代理就绪（最多 5 秒），若失败则跳过代理设置
+          sleep 2
+          if curl -s -x http://127.0.0.1:8080 https://pypi.org --connect-timeout 3 > /dev/null; then
+            echo "✅ 代理已就绪"
+            # 设置代理环境变量
+            echo "SKIP_PROXY=false" >> $GITHUB_ENV
+            echo "XRAY_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "ALL_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "HTTP_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "HTTPS_PROXY=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
+            echo "NO_PROXY=localhost,127.0.0.1" >> $GITHUB_ENV
+            echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
+            echo "✅ Xray 代理已启动: http://127.0.0.1:8080"
+          else
+            echo "❌ 代理启动失败或无法连接，跳过代理"
+            echo "SKIP_PROXY=true" >> $GITHUB_ENV
+            pkill -f xray || true
+          fi
 
       - name: 🛠️ 安装系统依赖
         run: |
@@ -182,9 +182,9 @@ jobs:
 
       - name: 🐍 安装 Python 依赖
         run: |
-          # 使用代理和信任主机解决 SSL 错误
-          pip install --upgrade pip --trusted-host pypi.org --trusted-host files.pythonhosted.org
-          pip install --proxy=http://127.0.0.1:8080 --trusted-host pypi.org --trusted-host files.pythonhosted.org seleniumbase
+          pip install --upgrade pip
+          # 使用 HTTP 源彻底避免 SSL 问题（无论代理是否启用）
+          pip install --index-url=http://pypi.org/simple/ --trusted-host pypi.org seleniumbase
           seleniumbase install chromedriver
 
       - name: 🚀 运行脚本
@@ -195,6 +195,10 @@ jobs:
           TG_BOT: ${{ secrets.TG_BOT }}
           CRON_JOB: ${{ secrets.US_CRON }}
         run: |
+          # 如果代理被跳过，则 unset 相关变量，避免脚本误用
+          if [ "$SKIP_PROXY" = "true" ]; then
+            unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY XRAY_PROXY
+          fi
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python axen_coins.py
 
       - name: 📸 上传截图
@@ -209,7 +213,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 清理时临时禁用代理，避免 API 调用失败
+          # 清理时禁用代理，避免 API 调用失败
           unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
           runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId' 2>/dev/null || echo "")
           if [ -n "$runs" ]; then
